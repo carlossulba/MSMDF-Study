@@ -41,8 +41,30 @@ The extracted fingerprints are stored in a dictionary structure, where the keys 
   }
 }
 ```
+.
+# Overview of Attack
+## Fingerprint Extraction
+| **Parameter**         | **Description**                                             | **Examples / Values**                               | **Comment**                                              |
+|------------------------|-------------------------------------------------------------|----------------------------------------------------|----------------------------------------------------------|
+| `fingerprint_length`   | Duration of samples included in each fingerprint.           | E.g., 1, 2, 3, …, 9 seconds                        |                                                          |
+| `sampling_rate`        | Rate at which data points are collected from all sensors.   | E.g., 10, 50, 100 Hz                               | From 10 to 200 Hz                                        |
+| `enabled_settings`     | Experimental contexts included in the extraction.           | on_hand, on_desk, on_hand_audio, on_desk_audio, walking | Recordings of walking vary greatly on length             |
+| `enabled_sensors`      | Motion sensors used for data collection.                    | Accelerometer, Gravity, Total acceleration, Gyroscope |                                                          |
+| `enabled_streams`      | Data streams (columns) used from the sensors.               | X, Y, Z, Magnitude, Azimuth, Inclination, Inter sample time | Azimuth and Inclination only for accelerometer-related data |
+| `enabled_features`     | Extracted features (scalars) from all streams.              | Mean, Variance, Standard Deviation, Spectral Energy, RMS, Skewness, etc. | 35 in total                                              |
 
-## License
+## Classifier Training
+| **Parameter**         | **Description**                                             | **Examples / Values**                               | **Comment**                                              |
+|------------------------|-------------------------------------------------------------|----------------------------------------------------|----------------------------------------------------------|
+| `num_devices`          | Number of devices used in the dataset.                 | E.g., 10, 50, 100                                  |                                                          |
+| `training_set_ratio`   | Fraction of the data used for training compared to testing. | E.g., 0.6 (60% training, 40% testing)              |                                                          |
+| `known_unknown_ratio`  | Ratio of known to unknown devices in an open-world scenario.| E.g., 0.9 (90% known, 10% unknown)                 | Helps evaluate performance in realistic scenarios.       |
+| `cv_folds`             | Number of folds for cross-validation during training.       | E.g., 5, 10                                        | Higher folds give robust evaluations but increase time and resources. |
+| `random_state`         | Random seed used to ensure reproducibility of results.      | E.g., 42, 12345                                    | Use a fixed seed for consistent experiments.             |
+| `classifiers`          | Set of classifiers used for training and evaluation.        | E.g., SVM, Random Forest, Bagging Classifier       | Multiple classifiers can be tested for comparison.       |
+
+.
+# License
 This project is open-source and available under the [GNU General Public License (GPL)](https://www.gnu.org/licenses/gpl-3.0.en.html). By using this repository, you agree to the following conditions:
 - Use responsibly and ethically.
 - Cite this repository in your work or research.
