@@ -61,7 +61,7 @@ The extracted fingerprints are stored in a dictionary structure, where the keys 
 | `known_unknown_ratio`  | Ratio of known to unknown devices in an open-world scenario.| E.g., 0.9 (90% known, 10% unknown)                 | Helps evaluate performance in realistic scenarios.       |
 | `cv_folds`             | Number of folds for cross-validation during training.       | E.g., 5, 10                                        | Higher folds give robust evaluations but increase time and resources. |
 | `random_state`         | Random seed used to ensure reproducibility of results.      | E.g., 42, 12345                                    | Use a fixed seed for consistent experiments.             |
-| `classifiers`          | Set of classifiers used for training and evaluation.        | E.g., SVM, Random Forest, Bagging Classifier       | Multiple classifiers can be tested for comparison.       |
+| `classifiers`          | Set of classifiers used for training and evaluation.        | E.g., SVM, Random Forest, Bagging Classifier       | 14 in total.       |
 
 .
 # License
