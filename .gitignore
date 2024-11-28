@@ -1,0 +1,71 @@
+# Python-specific ignores
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.env
+*.venv/
+.env/
+*.egg
+*.egg-info/
+dist/
+build/
+pip-wheel-metadata/
+*.py[d]x
+
+# Editor/IDE-specific ignores
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs (PyCharm, IntelliJ, etc.)
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# OS-specific ignores
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+*.swp
+*.swo
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*.pid
+
+# Version control
+*.orig
+*.rej
+
+# Archives
+*.tar
+*.gz
+*.zip
+*.7z
+*.bz2
+*.xz
+
+# Dependency directories
+node_modules/
+vendor/
+
+# General backup and metadata
+*.bak
+*.tmp
+*.~lock.*
+~$*
