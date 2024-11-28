@@ -121,8 +121,10 @@ class FingerprintConfig:
                     f"Valid options are: {valid_members}."
                 )
         
-        if not os.path.isdir(self.data_location):
-            raise ValueError(f"The data location '{self.data_location}' is not a valid directory.")
+        if not os.path.exists(self.data_location):
+            raise ValueError(f"The path '{self.data_location}' does not exist.")
+        elif not (os.path.isdir(self.data_location) or os.path.isfile(self.data_location)):
+            raise ValueError(f"The path '{self.data_location}' is neither a file nor a directory.")
         
         if not 1 <= self.fingerprint_length <= 10:
             raise ValueError("The fingerprint length must be between 1 and 10.")
