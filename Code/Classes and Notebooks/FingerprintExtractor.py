@@ -969,10 +969,10 @@ if __name__ == "__main__":
         fingerprint_length=9.0,
         sampling_rate=100,
         
-        enabled_settings=set([FingerprintSetting.ON_HAND]),
-        enabled_sensors=set([FingerprintSensor.ACCELEROMETER]),
+        enabled_settings=set([FingerprintSetting.ON_HAND, FingerprintSetting.ON_DESK]),
+        enabled_sensors=set([FingerprintSensor.ACCELEROMETER, FingerprintSensor.GYROSCOPE]),
         enabled_streams=set([FingerprintDataStream.X]),
-        enabled_features=set([FingerprintFeature.DC])
+        enabled_features=set([FingerprintFeature.MEAN, FingerprintFeature.RMS, FingerprintFeature.STD_DEV])
     )
     
     # Initialize extractor
