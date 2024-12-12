@@ -10,6 +10,7 @@ import matplotlib.widgets as widgets
 import json
 import logging
 import copy
+import re
 from typing import List, Tuple, Dict
 
 
@@ -46,9 +47,29 @@ class Recording:
         if not os.path.exists(self.recording_path):
             raise ValueError(f"Recording directory '{self.recording_name}' does not exist.")
         
-        self.recording_name = os.path.basename(self.recording_path)
+        pattern = r'^(.*?)_(.*?)-(20\d\d_\d\d_\d\d_\d\d_\d\d_\d\d)(.*)$'
         
-        self.device_name, self.device_id = self.recording_name.split('_', 2)[:2]
+        # get basename out of path
+        match = re.match(pattern, os.path.basename(self.recording_path))
+        if not match:
+            # If it doesn't match, handle it gracefully
+            raise ValueError(f"Recording name '{self.recording_path}' does not match expected pattern.")
+
+        # Parse recording name
+        device_name, device_id, datetime_str, remainder = match.groups()
+        
+        short_recording_name = remainder.strip("_- ")
+        
+        if short_recording_name:
+            short_recording_name = f"{datetime_str} - {short_recording_name}"
+        else:
+            short_recording_name = datetime_str
+          
+        # Set the attributes  
+        self.device_name = device_name
+        self.device_id = device_id
+        self.recording_name = short_recording_name
+        
         
         self.csv_files = glob.glob(os.path.join(self.recording_path, "*.csv"))
         
@@ -78,8 +99,13 @@ class RecordingSegmenter:
         self.control_file_path = control_file_path
         self.control_file = None
         
-        self._setup_logger(log_level)
+        self.max_acceptable_gap = 1 / 10  # min 10 Hz sampling rate
+        self.max_duration = 360.0  # 6 minutes
+        self.min_duration = 10.0  # 10 seconds
         
+        self._setup_logger(log_level)
+        self.__post_init__()
+    
     def _setup_logger(self, log_level: str):
         """Setup logging for the classifier trainer."""
         basic_format = '%(levelname)s - %(message)s'
@@ -118,10 +144,10 @@ class RecordingSegmenter:
         """ Create a control file to track the processing status of recordings. """
         # Define the columns for the control file
         columns = [
-            "recording_name",
-            "device_name",
-            "device_id",
             "pseudonym",
+            "device_id",
+            "device_name",
+            "recording_name",
             "processed",
             "notes",
             "last_update"
@@ -130,15 +156,15 @@ class RecordingSegmenter:
         # Create and Save the control file
         df = pd.DataFrame(columns=columns)
         df.to_csv(self.control_file_path, index=False)
-
+    
     def _update_control_file(self, recording: Recording, processed: bool, notes: str = ""):
         """ Update the control file with the processing status of a recording. """
         # Create the new row
         new_row = pd.DataFrame({
-            "recording_name": [recording.recording_name],
-            "device_name": [recording.device_name],
-            "device_id": [recording.device_id],
             "pseudonym": [recording.pseudonym],
+            "device_id": [recording.device_id],
+            "device_name": [recording.device_name],
+            "recording_name": [recording.recording_name],
             "processed": [processed],
             "notes": [notes],
             "last_update": [pd.Timestamp.now().strftime("%Y-%m-%d")]
@@ -155,6 +181,8 @@ class RecordingSegmenter:
             # If it doesn't exist, concatenate the new row to the DataFrame
             self.control_file = pd.concat([self.control_file, new_row], ignore_index=True)
             self.logger.info(f"Added new entry to control file for recording: {recording.recording_name}")
+            
+        self.control_file.to_csv(self.control_file_path, index=False)
 
     def process_recordings(self):
         """ Process all recordings in the base directory and update the control file. """
@@ -168,12 +196,12 @@ class RecordingSegmenter:
                 self.logger.info(f"Skipping recording: {recording.recording_name} as it has already been processed.")
                 continue
             
-            self.logger.info(f"\nProcessing recording: {recording.recording_name}")
+            self.logger.info(f"Processing recording: {recording.recording_name}")
             
             # Process the recording and update the control file
             self.process_recording(recording)
         
-        self.logger.info("\nAll recordings processed. Check the control file for details.")
+        self.logger.info("All recordings processed. Check the control file for details.")
  
     def process_recording(self, recording: Recording):
         """ Process a single recording and update the control file. """
@@ -221,30 +249,35 @@ class RecordingSegmenter:
         # Check if the data in the files meets the minimum quality requirements
         recording.data = self._load_data(required_files, recording.recording_path)
         
-        max_acceptable_gap = 1 / 10  # 10 Hz sampling rate
-        max_duration = 300.0  # 5 minutes
-        min_duration = 10.0  # 10 seconds
-        
-        for df, _ in recording.data:
+        for sensor_name, df in recording.data:
+            # Handle missing values (e.g., NaN) using linear interpolation
+            if df.isnull().values.any():
+                self.logger.warning(f"Interpolating missing values for {sensor_name} in recording {recording.recording_name}.")
+                df.interpolate(method="linear", limit_direction="forward", axis=0, inplace=True)
+                df.bfill(inplace=True)
+                df.ffill(inplace=True)
+                
+            # Check for large time gaps in the data
             time_values = df["seconds_elapsed"]
             time_diffs = time_values.diff()
             
-            if any (time_diffs > max_acceptable_gap):
+            if any (time_diffs > self.max_acceptable_gap):
                 self.logger.warning(f"Recording {recording.recording_name} contains time gaps greater than 100 ms. Skipping.")
                 return False
             
+            # Check for allowed duration of the recording
             recording_duration = time_values.max() - time_values.min()
-            if recording_duration > max_duration:
-                self.logger.warning(f"Recording {recording.recording_name} is longer than {max_duration} seconds. Skipping.")
+            if recording_duration > self.max_duration:
+                self.logger.warning(f"Recording {recording.recording_name} is longer than {self.max_duration} seconds. Skipping.")
                 return False
             
-            if recording_duration < min_duration:
-                self.logger.warning(f"Recording {recording.recording_name} is shorter than {min_duration} seconds. Skipping.")
+            if recording_duration < self.min_duration:
+                self.logger.warning(f"Recording {recording.recording_name} is shorter than {self.min_duration} seconds. Skipping.")
                 return False
         
         return True
     
-    def _load_data(files: List[str], recording_path: str) -> List[Tuple[str, pd.DataFrame]]:
+    def _load_data(self, files: List[str], recording_path: str) -> List[Tuple[str, pd.DataFrame]]:
         """
         Load CSV files and add magnitude column.
 
@@ -319,7 +352,7 @@ class RecordingSegmenter:
             min_duration=8, max_duration=10)
         
         on_hand_audio_segment = self._detect_segment(
-            data, "on_hand_audio", 
+            data, "on_hand_audio", common_time,
             start_time=on_desk_segment[1], end_time=on_desk_audio_segment[0], 
             min_duration=8, max_duration=10)
         
@@ -391,18 +424,18 @@ class RecordingSegmenter:
                 'gravity_z': (8, 10)}
         elif step == "walking_1":
             thresholds_mask = {
-                'acc_mag': (0, 20),
-                'gyro_mag': (0, 10),
+                'acc_mag': (0.08, 20),
+                'gyro_mag': (0.08, 10),
                 'gravity_x': (-10, 10),
-                'gravity_y': (-10, 6),
-                'gravity_z': (-6, 6)}
+                'gravity_y': (-10, 7),
+                'gravity_z': (-6, 10)}
         elif step == "walking_2":
             thresholds_mask = {
-                'acc_mag': (0, 20),
-                'gyro_mag': (0, 10),
+                'acc_mag': (0.08, 20),
+                'gyro_mag': (0.08, 10),
                 'gravity_x': (-10, 10),
-                'gravity_y': (-10, 6),
-                'gravity_z': (-6, 6)}
+                'gravity_y': (-10, 7),
+                'gravity_z': (-6, 10)}
                 
         # Build mask
         mask = (
@@ -414,6 +447,8 @@ class RecordingSegmenter:
         )
         
         # Restrict to the specified time window
+        if start_time is None or end_time is None:
+            return None, None
         time_mask = (common_time >= start_time) & (common_time <= end_time)
         mask = mask & time_mask
         
@@ -443,17 +478,68 @@ class RecordingSegmenter:
             seg_start_time = common_time[seg_start_idx]
             seg_end_time = common_time[seg_end_idx]
             duration = seg_end_time - seg_start_time
-            if duration >= min_duration and duration <= max_duration:
+            
+            if duration < min_duration:
+                # Too short, discard entirely
+                continue
+            elif duration <= max_duration:
+                # Fits well
                 valid_segments.append((seg_start_time, seg_end_time))
+            else:
+                # Too long, split into max_duration chunks
+                candidate_subsegs = []
+                current_start = seg_start_time
+
+                while current_start < seg_end_time:
+                    current_end = current_start + max_duration
+                    if current_end > seg_end_time:
+                        # This is the last chunk
+                        remainder = seg_end_time - current_start
+                        if remainder >= min_duration:
+                            candidate_subsegs.append((current_start, seg_end_time))
+                        # If remainder < min_duration, discard the remainder
+                        break
+                    else:
+                        candidate_subsegs.append((current_start, current_end))
+                        current_start += 1
+
+                # Now we need to pick the representative segment based on which step
+                # [on_hand, on_hand_audio, on_desk, on_desk_audio] : minimal variability
+                # [walking_1, walking_2] : maximal variability
+                if candidate_subsegs:
+                    chosen_subseg = None
+                    chosen_variability = None
+                    
+                    for (sub_start, sub_end) in candidate_subsegs:
+                        sub_indices = np.where((common_time >= sub_start) & (common_time <= sub_end))[0]
+                        if len(sub_indices) > 1:
+                            sub_acc_data = data["acc"][sub_indices]
+                            sub_std = np.std(sub_acc_data)
+                            
+                            if chosen_variability is None:
+                                chosen_variability = sub_std
+                                chosen_subseg = (sub_start, sub_end)
+                            else:
+                                if step in ["on_hand", "on_hand_audio", "on_desk", "on_desk_audio"]:
+                                    if sub_std < chosen_variability:
+                                        chosen_variability = sub_std
+                                        chosen_subseg = (sub_start, sub_end)
+                                elif step in ["walking_1", "walking_2"]:
+                                    if sub_std > chosen_variability:
+                                        chosen_variability = sub_std
+                                        chosen_subseg = (sub_start, sub_end)
+                    
+                    if chosen_subseg:
+                        valid_segments.append(chosen_subseg)
         
         # If no valid segment found, return None
         if not valid_segments:
             return None, None
         
         # Choose the "best fit" segment depending on the step:
-        # - on_desk, on_desk_audio, walking_1: left-most (earliest start time)
-        # - on_hand, on_hand_audio, walking_2: right-most (latest start time)
-        if step in ["on_desk", "on_desk_audio", "walking_1"]:
+        # - on_desk, walking_1: left-most (earliest start time)
+        # - on_hand, on_desk_audio, on_hand_audio, walking_2: right-most (latest start time)
+        if step in ["on_desk", "walking_1"]:
             chosen_segment = valid_segments[0]  # segments are in chronological order
         else:
             chosen_segment = valid_segments[-1]  # take the last one for right-most
@@ -476,17 +562,39 @@ class RecordingSegmenter:
         original_steps = copy.deepcopy(steps)
         
         # Ensure all steps exist with default values if not detected
-        all_steps = ['step1', 'step2', 'step3', 'step4', 'step5', 'step6']
+        all_steps = ['on_hand', 'on_desk', 'on_hand_audio', 'on_desk_audio', 'walking_1', 'walking_2']
+        defaults = {}
+
+        # Set default times for each step
         default_start = 5
-        for step in all_steps:
-            if step not in steps or steps[step] is None:
-                if step in ['step1', 'step2', 'step3', 'step4']:
-                    steps[step] = (default_start, default_start + 10)
-                    default_start += 15 if step in ['step1', 'step3'] else 25
-                else:
-                    # steps 5 and 6
-                    steps[step] = (default_start, default_start + 5)
-                    default_start += 15
+
+        if steps.get("on_hand") in [None, (None, None)]:
+            steps["on_hand"] = (default_start, default_start + 10)
+            
+        if steps.get("on_desk") in [None, (None, None)]:
+            on_hand_end = steps["on_hand"][1]
+            steps["on_desk"] = (on_hand_end + 5, on_hand_end + 15)
+            
+        if steps.get("on_hand_audio") in [None, (None, None)]:
+            mid_time = common_time[len(common_time) // 2]  # Calculate the middle of common_time
+            steps["on_hand_audio"] = (mid_time - 15, mid_time - 5)
+
+        if steps.get("on_desk_audio") in [None, (None, None)]:
+            on_hand_audio_end = steps["on_hand_audio"][1]
+            steps["on_desk_audio"] = (on_hand_audio_end + 5, on_hand_audio_end + 15)
+
+        if steps.get("walking_1") in [None, (None, None)]:
+            on_desk_audio_end = steps["on_desk_audio"][1]
+            steps["walking_1"] = (on_desk_audio_end + 10, on_desk_audio_end + 20)
+
+        if steps.get("walking_2") in [None, (None, None)]:
+            walking_1_end = steps["walking_1"][1]
+            steps["walking_2"] = (walking_1_end + 5, walking_1_end + 15)
+        
+        max_time = common_time[-1]
+        for step_name, (start, end) in steps.items():
+            if end > max_time - 1:
+                steps[step_name] = (max_time - 11, max_time - 1)
         
         # Create figure and subplots
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(18, 14))
@@ -524,10 +632,10 @@ class RecordingSegmenter:
             'gravity': []
         }
 
-        for i, (step, period) in enumerate(steps.items()):
+        for i, (step_name, period) in enumerate(steps.items()):
             start, end = period
             color = colors[i]
-            step_rects['acc'].append(ax1.axvspan(start, end, alpha=0.3, color=color, label=f"{step}"))
+            step_rects['acc'].append(ax1.axvspan(start, end, alpha=0.3, color=color, label=f"{step_name}"))
             step_rects['gyro'].append(ax2.axvspan(start, end, alpha=0.3, color=color))
             step_rects['gravity'].append(ax3.axvspan(start, end, alpha=0.3, color=color))
 
@@ -538,30 +646,30 @@ class RecordingSegmenter:
 
         # Create sliders
         sliders = []
-        fixed_duration_steps = ['step1', 'step2', 'step3', 'step4']
-        variable_duration_steps = ['step5', 'step6']
+        fixed_duration_steps = ['on_hand', 'on_desk', 'on_hand_audio', 'on_desk_audio']
+        variable_duration_steps = ['walking_1', 'walking_2']
 
         # Fixed duration steps: only start slider
-        for i, step in enumerate(fixed_duration_steps):
-            start, end = steps[step]
+        for i, step_name in enumerate(fixed_duration_steps):
+            start, end = steps[step_name]
             
             ax_start = plt.axes([0.1 + (i % 2) * 0.45, 0.24 - (i // 2) * 0.04, 0.35, 0.03])
             
-            start_slider = widgets.Slider(ax_start, f'{step} Start', 0, max_time - 10, valinit=start, valstep=0.1)
+            start_slider = widgets.Slider(ax_start, f'{step_name} Start', 0, max_time - 10, valinit=start, valstep=0.1)
             
-            sliders.append({'start': start_slider, 'end': None})
+            sliders.append({'step': step_name, 'start': start_slider, 'end': None})
 
         # Variable duration steps: start and end sliders
-        for i, step in enumerate(variable_duration_steps):
-            start, end = steps[step]
+        for i, step_name in enumerate(variable_duration_steps):
+            start, end = steps[step_name]
             
             ax_start = plt.axes([0.1 + (i % 2) * 0.45, 0.16 - (i // 2) * 0.08, 0.35, 0.03])
             ax_end = plt.axes([0.1 + (i % 2) * 0.45, 0.12 - (i // 2) * 0.08, 0.35, 0.03])
             
-            start_slider = widgets.Slider(ax_start, f'{step} Start', 0, max_time, valinit=start, valstep=0.1)
-            end_slider = widgets.Slider(ax_end, f'{step} End', 0, max_time, valinit=end, valstep=0.1)
+            start_slider = widgets.Slider(ax_start, f'{step_name} Start', 0, max_time, valinit=start, valstep=0.1)
+            end_slider = widgets.Slider(ax_end, f'{step_name} End', 0, max_time, valinit=end, valstep=0.1)
             
-            sliders.append({'start': start_slider, 'end': end_slider})
+            sliders.append({'step': step_name, 'start': start_slider, 'end': end_slider})
 
         # Add buttons
         done_ax = plt.axes([0.8, 0.04, 0.1, 0.04])
@@ -630,7 +738,7 @@ class RecordingSegmenter:
         skip_button.on_clicked(skip_clicked)
         cancel_step_button.on_clicked(cancel_clicked)
 
-        plt.show()     
+        plt.show(block=True)     
 
         # Based on user action, return steps or None
         if user_action[0] == 'done':
@@ -663,7 +771,7 @@ class RecordingSegmenter:
         
         return segments
     
-    def _add_extra_columns(segments: Dict[str, Dict[str, pd.DataFrame]]) -> Dict[str, Dict[str, pd.DataFrame]]:
+    def _add_extra_columns(self, segments: Dict[str, Dict[str, pd.DataFrame]]) -> Dict[str, Dict[str, pd.DataFrame]]:
         """
         Add additional computed columns to the segmented data:
         - inter_sample_time: difference between consecutive samples
@@ -674,6 +782,7 @@ class RecordingSegmenter:
             for name, df in sensors.items():
                 # Add inter-sample time
                 df["inter_sample_time"] = df["seconds_elapsed"].diff()
+                df["inter_sample_time"].fillna(0, inplace=True) 
 
                 # Add magnitude column if needed
                 if "magnitude" not in df.columns:
@@ -685,58 +794,48 @@ class RecordingSegmenter:
                     
                     with np.errstate(invalid='ignore'):
                         df['inclination'] = np.arccos(df["z"] / df["magnitude"]) * (180 / np.pi)
-                
+                    
+                    # Use interpolation to fill NaN values
+                    df['inclination'] = df['inclination'].interpolate(method='linear', limit_direction='forward', axis=0)
+                    df['inclination'] = df['inclination'].bfill().ffill()
                 
                 # Update the DataFrame in the dictionary
                 sensors[name] = df
 
         return segments
 
-    def _save_segmented_data(segments: Dict[str, Dict[str, pd.DataFrame]], base_dir: str, output_dir: str, recording: Recording) -> Dict[str, str]:
+    def _save_segmented_data(self, segments: Dict[str, Dict[str, pd.DataFrame]], base_dir: str, output_dir: str, recording: Recording) -> Dict[str, str]:
         """
         Save all sensor streams organized by settings (on_hand, on_desk, etc.).
         """
-        # Map step names to setting directories
-        step_settings = {
-            "step1": "on_hand",
-            "step2": "on_desk",
-            "step3": "on_hand_audio",
-            "step4": "on_desk_audio",
-            "step5": "walking_1",
-            "step6": "walking_2"
-        }
-
         step_status = {}
 
         # Create base directories for each setting
-        for setting in step_settings.values():
+        for setting in segments.keys():
             setting_dir = os.path.join(output_dir, setting)
             os.makedirs(setting_dir, exist_ok=True)
 
-        # Process each step
-        for step, setting in step_settings.items():
-            if step not in segments or not segments[step]:
-                step_status[step] = "No Data"
+        # Save each setting in correspinding setting directory
+        for setting, sensor_data in segments.items():
+            if not sensor_data:
+                step_status[setting] = "No Data"
                 continue
 
             try:
-                # Directory for this setting and recording
-                setting_dir = os.path.join(output_dir, setting, f"{setting} - {recording.pseudonym} - {recording.device_id} - {recording.device_name} - {recording.recording_name}")
-                os.makedirs(setting_dir, exist_ok=True)
+                # Create directory for this (setting, recording)
+                recording_dir = f"{setting} - {recording.pseudonym} - {recording.device_id} - {recording.device_name} - {recording.recording_name}"
+                recording_dir_path= os.path.join(output_dir, setting, recording_dir)
+                recording_dir_path = os.path.normpath(recording_dir_path)
+                os.makedirs(recording_dir_path, exist_ok=True)
 
                 # Save each sensor DataFrame to a separate CSV
-                for name, df in segments[step].items():
-                    # Deduce sensor type from filename (remove '.csv')
-                    sensor_type = os.path.splitext(os.path.basename(name))[0]
-
-                    # File path for the sensor type
-                    file_path = os.path.join(setting_dir, f"{sensor_type}.csv")
-
+                for name, df in sensor_data.items():
+                    file_path = os.path.join(recording_dir_path, name)
                     df.to_csv(file_path, index=False)
 
-                step_status[step] = "Successful"
+                step_status[setting] = "Successful"
             except Exception as e:
-                step_status[step] = f"Failed: {e}"
+                step_status[setting] = f"Failed: {e}"
 
         return step_status
 
@@ -799,7 +898,7 @@ if __name__ == "__main__":
     segmenter = RecordingSegmenter(    
         base_directory = "../Data/raw data/all data/",
         output_directory = "../Data/raw data/separated by setting/",
-        control_file_path = "../Data/raw data/processing_progress.csv"
+        control_file_path = "../Data/raw data/RecordingSegmenter_control_file.csv"
     )
 
     segmenter.process_recordings()
