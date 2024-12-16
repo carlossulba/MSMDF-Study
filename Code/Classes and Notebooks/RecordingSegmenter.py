@@ -11,6 +11,7 @@ import json
 import logging
 import copy
 import re
+import scipy.signal
 from typing import List, Tuple, Dict
 
 
@@ -340,31 +341,44 @@ class RecordingSegmenter:
             data, "on_desk", common_time,
             start_time=0, end_time=common_time[-1], 
             min_duration=8, max_duration=10)
+        if on_desk_segment == (None, None):
+            on_desk_segment = (5, 15)
         
         on_hand_segment = self._detect_segment(
             data, "on_hand", common_time,
             start_time=0, end_time=on_desk_segment[0], 
             min_duration=8, max_duration=10)
+        if on_hand_segment == (None, None):
+            on_hand_segment = (on_desk_segment[0] - 15, on_desk_segment[0] - 5)
         
         on_desk_audio_segment = self._detect_segment(
             data, "on_desk_audio", common_time,
             start_time=on_desk_segment[1], end_time=common_time[-1], 
             min_duration=8, max_duration=10)
+        if on_desk_audio_segment == (None, None):
+            on_desk_audio_segment = (on_desk_segment[1] + 5, on_desk_segment[1] + 15)
         
         on_hand_audio_segment = self._detect_segment(
             data, "on_hand_audio", common_time,
             start_time=on_desk_segment[1], end_time=on_desk_audio_segment[0], 
             min_duration=8, max_duration=10)
+        if on_hand_audio_segment == (None, None):
+            mid_time = common_time[len(common_time) // 2]
+            on_hand_audio_segment = (mid_time - 15, mid_time - 5)
         
         walking_1_segment = self._detect_segment(
             data, "walking_1", common_time,
             start_time=on_desk_audio_segment[1], end_time=common_time[-1], 
-            min_duration=4, max_duration=13)
+            min_duration=6, max_duration=13)
+        if walking_1_segment == (None, None):
+            walking_1_segment = (on_desk_audio_segment[1] + 10, on_desk_audio_segment[1] + 20)
         
         walking_2_segment = self._detect_segment(
             data, "walking_2", common_time,
             start_time=walking_1_segment[1], end_time=common_time[-1], 
-            min_duration=4, max_duration=13)
+            min_duration=6, max_duration=13)
+        if walking_2_segment == (None, None):
+            walking_2_segment = (walking_1_segment[1] + 5, walking_1_segment[1] + 15)
         
         segments = {
             "on_hand": on_hand_segment,
@@ -374,6 +388,11 @@ class RecordingSegmenter:
             "walking_1": walking_1_segment,
             "walking_2": walking_2_segment
         }
+        
+        max_time = common_time[-1]
+        for step_name, (start, end) in segments.items():
+            if end > max_time - 1:
+                segments[step_name] = (max_time - 11, max_time - 1)
         
         # validate the detected segments
         segments = self._create_interactive_step_plot(common_time, data, segments)
@@ -403,22 +422,22 @@ class RecordingSegmenter:
                 'gravity_z': (0, 10)}
         elif step == "on_desk":
             thresholds_mask = {
-                'acc_mag': (0, 0.28),
+                'acc_mag': (0, 0.8),
                 'gyro_mag': (0, 0.1),
                 'gravity_x': (-1, 1),
                 'gravity_y': (-1, 1),
                 'gravity_z': (8, 10)}
         elif step == "on_hand_audio":
             thresholds_mask = {
-                'acc_mag': (0, 1),
+                'acc_mag': (0, 2),
                 'gyro_mag': (0, 4.2),
                 'gravity_x': (-2, 2),
                 'gravity_y': (1, 10),
                 'gravity_z': (0, 10)}
         elif step == "on_desk_audio":
             thresholds_mask = {
-                'acc_mag': (0, 0.3),
-                'gyro_mag': (0, 4.2),
+                'acc_mag': (0, 1.3),
+                'gyro_mag': (0, 8),
                 'gravity_x': (-1, 1),
                 'gravity_y': (-1, 1),
                 'gravity_z': (8, 10)}
@@ -516,6 +535,11 @@ class RecordingSegmenter:
                             sub_acc_data = data["acc"][sub_indices]
                             sub_std = np.std(sub_acc_data)
                             
+                            peaks, _ = scipy.signal.find_peaks(sub_acc_data, height=0.2, prominence=0.15)
+                            num_peaks = len(peaks)
+                            if step in ["walking_1", "walking_2"] and num_peaks < 5:
+                                continue 
+                            
                             if chosen_variability is None:
                                 chosen_variability = sub_std
                                 chosen_subseg = (sub_start, sub_end)
@@ -565,37 +589,6 @@ class RecordingSegmenter:
         all_steps = ['on_hand', 'on_desk', 'on_hand_audio', 'on_desk_audio', 'walking_1', 'walking_2']
         defaults = {}
 
-        # Set default times for each step
-        default_start = 5
-
-        if steps.get("on_hand") in [None, (None, None)]:
-            steps["on_hand"] = (default_start, default_start + 10)
-            
-        if steps.get("on_desk") in [None, (None, None)]:
-            on_hand_end = steps["on_hand"][1]
-            steps["on_desk"] = (on_hand_end + 5, on_hand_end + 15)
-            
-        if steps.get("on_hand_audio") in [None, (None, None)]:
-            mid_time = common_time[len(common_time) // 2]  # Calculate the middle of common_time
-            steps["on_hand_audio"] = (mid_time - 15, mid_time - 5)
-
-        if steps.get("on_desk_audio") in [None, (None, None)]:
-            on_hand_audio_end = steps["on_hand_audio"][1]
-            steps["on_desk_audio"] = (on_hand_audio_end + 5, on_hand_audio_end + 15)
-
-        if steps.get("walking_1") in [None, (None, None)]:
-            on_desk_audio_end = steps["on_desk_audio"][1]
-            steps["walking_1"] = (on_desk_audio_end + 10, on_desk_audio_end + 20)
-
-        if steps.get("walking_2") in [None, (None, None)]:
-            walking_1_end = steps["walking_1"][1]
-            steps["walking_2"] = (walking_1_end + 5, walking_1_end + 15)
-        
-        max_time = common_time[-1]
-        for step_name, (start, end) in steps.items():
-            if end > max_time - 1:
-                steps[step_name] = (max_time - 11, max_time - 1)
-        
         # Create figure and subplots
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(18, 14))
         figManager = plt.get_current_fig_manager()
