@@ -12,6 +12,7 @@ import logging
 import copy
 import re
 import scipy.signal
+import shutil
 from typing import List, Tuple, Dict
 
 
@@ -86,7 +87,7 @@ class RecordingSegmenter:
     (on hand, on desk, on hand audio, on desk audio, walking 1, walking 2)
     """
     
-    def __init__(self, base_directory: str, output_directory: str, control_file_path: str, log_level: str = 'INFO'):
+    def __init__(self, base_directory: str, output_directory: str, control_file_path: str, skip_directory: str , log_level: str = 'INFO'):
         """
         Initialize the RecordingSegmenter object.
         
@@ -99,10 +100,11 @@ class RecordingSegmenter:
         self.output_directory = output_directory
         self.control_file_path = control_file_path
         self.control_file = None
+        self.skip_directory = skip_directory
         
         self.max_acceptable_gap = 1 / 10  # min 10 Hz sampling rate
         self.max_duration = 360.0  # 6 minutes
-        self.min_duration = 10.0  # 10 seconds
+        self.min_duration = 60.0  # 1 minute
         
         self._setup_logger(log_level)
         self.__post_init__()
@@ -207,14 +209,15 @@ class RecordingSegmenter:
     def process_recording(self, recording: Recording):
         """ Process a single recording and update the control file. """
         # control the quality of the recording
-        acceptable_quality = self._quality_control(recording)
+        acceptable_quality, message = self._quality_control(recording)
         
         if acceptable_quality:
             # detect steps
-            steps = self._detect_steps(recording)
+            steps, message = self._detect_steps(recording)
             
             if steps is None:
-                self._update_control_file(recording, processed=False, notes="no steps detected")
+                self._move_recording(recording, self.skip_directory)
+                self._update_control_file(recording, processed=False, notes=f"no steps detected: {message}")
                 return
             
             # segment the data
@@ -229,7 +232,8 @@ class RecordingSegmenter:
             # update the control file
             self._update_control_file(recording, processed=True, notes="successful")
         else:
-            self._update_control_file(recording, processed=False, notes="bad data quality")
+            self._move_recording(recording, self.skip_directory)
+            self._update_control_file(recording, processed=False, notes=f"bad data quality: {message}")
     
     def _quality_control(self, recording: Recording):
         """ Check if all the required files are present and the data quality is acceptable. """
@@ -245,7 +249,7 @@ class RecordingSegmenter:
         missing_files = [file for file in required_files if not os.path.exists(os.path.join(recording.recording_path, file))]
         if missing_files:
             self.logger.warning(f"Recording {recording.recording_name} is missing some required files. Skipping.")
-            return False
+            return False, "missing files"
         
         # Load the data
         recording.data = self._load_data(required_files, recording.recording_path)
@@ -256,17 +260,17 @@ class RecordingSegmenter:
             time_diffs = time_values.diff()
             if any(time_diffs > self.max_acceptable_gap):
                 self.logger.warning(f"Recording {recording.recording_name} contains time gaps greater than 100 ms. Skipping.")
-                return False    
+                return False, "too large time gaps"
                 
             # Check for allowed duration of the recording
             recording_duration = time_values.max() - time_values.min()
             if recording_duration > self.max_duration:
                 self.logger.warning(f"Recording {recording.recording_name} is longer than {self.max_duration} seconds. Skipping.")
-                return False
+                return False, "recording too long"
             
             if recording_duration < self.min_duration:
                 self.logger.warning(f"Recording {recording.recording_name} is shorter than {self.min_duration} seconds. Skipping.")
-                return False
+                return False, "recording too short"
             
             # Handle missing values (e.g., NaN) using linear interpolation
             if df.isnull().values.any():
@@ -275,7 +279,7 @@ class RecordingSegmenter:
                 df.bfill(inplace=True)
                 df.ffill(inplace=True)
         
-        return True
+        return True, ""
     
     def _load_data(self, files: List[str], recording_path: str) -> List[Tuple[str, pd.DataFrame]]:
         """
@@ -316,7 +320,7 @@ class RecordingSegmenter:
         
         common_time = np.union1d(
             np.union1d(acc_data["seconds_elapsed"], gravity_data["seconds_elapsed"]),
-            np.union1d(gyro_data["seconds_elapsed"]),
+            gyro_data["seconds_elapsed"],
             # np.union1d(total_acc_data["seconds_elapsed"], gyro_data["seconds_elapsed"]),
         )
         
@@ -395,9 +399,9 @@ class RecordingSegmenter:
                 segments[step_name] = (max_time - 11, max_time - 1)
         
         # validate the detected segments
-        segments = self._create_interactive_step_plot(common_time, data, segments)
+        segments, message = self._create_interactive_step_plot(common_time, data, segments)
         
-        return segments
+        return segments, message
     
     def _detect_segment(self, data, step: str, common_time: np.ndarray,
                         start_time: float = 0.0, end_time: float = 300.0, 
@@ -616,7 +620,7 @@ class RecordingSegmenter:
         ax3.grid(True, linestyle="--", alpha=0.7)
 
         # Colors for step highlighting
-        colors = ["#3498DB", "#E74C3C", "#2ECC71", "#9B59B6", "#FF5733", "#C70039"]
+        colors = ["#C4F589", "#FFC300", "#FF5733", "#C70039", "#900C3F", "#581845"]
 
         # Highlight steps
         step_rects = {
@@ -735,10 +739,11 @@ class RecordingSegmenter:
 
         # Based on user action, return steps or None
         if user_action[0] == 'done':
-            return steps
-        else:
-            # 'skip', 'cancel', or window closed without action
-            return None
+            return steps, ""
+        elif user_action[0] == 'skip':
+            return None, 'skip'
+        elif user_action[0] == 'skip':
+            return None, 'cancel'
 
     def _segment_data(self, recording: Recording, steps: Dict[str, Tuple[float, float]]):
         """ Segment the recording's data according to the detected steps and save each in a different directory. """
@@ -833,6 +838,22 @@ class RecordingSegmenter:
 
         return step_status
 
+    def _move_recording(self, recording: Recording, target_dir: str = ""):
+        """Move the entire recording directory to the specified directory or the skipped directory by default."""
+        if target_dir == "":
+            target_dir = self.skip_directory
+        
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir)
+        
+        source = recording.recording_path
+        destination = os.path.join(target_dir, os.path.basename(recording.recording_path))
+        
+        try:
+            shutil.move(source, destination)
+            self.logger.info(f"Moved {source} to {destination}")
+        except Exception as e:
+            self.logger.error(f"Error moving {source} to {destination}: {e}")
 
 def plot_sensor_data(data: List[Tuple[pd.DataFrame, str]]) -> None:
     """
@@ -892,7 +913,8 @@ if __name__ == "__main__":
     segmenter = RecordingSegmenter(    
         base_directory = "../Data/raw data/all data/",
         output_directory = "../Data/raw data/separated by setting/",
-        control_file_path = "../Data/raw data/RecordingSegmenter_control_file.csv"
+        control_file_path = "../Data/raw data/RecordingSegmenter_control_file.csv",
+        skip_directory = "../Data/raw data/skipped recordings/"
     )
 
     segmenter.process_recordings()
