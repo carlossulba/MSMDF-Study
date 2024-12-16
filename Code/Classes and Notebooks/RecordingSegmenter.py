@@ -237,7 +237,7 @@ class RecordingSegmenter:
         required_files = [
             "Accelerometer.csv",
             "Gravity.csv",
-            "TotalAcceleration.csv",
+            # "TotalAcceleration.csv",
             "Gyroscope.csv",
         ]
         
@@ -247,25 +247,17 @@ class RecordingSegmenter:
             self.logger.warning(f"Recording {recording.recording_name} is missing some required files. Skipping.")
             return False
         
-        # Check if the data in the files meets the minimum quality requirements
+        # Load the data
         recording.data = self._load_data(required_files, recording.recording_path)
         
         for sensor_name, df in recording.data:
-            # Handle missing values (e.g., NaN) using linear interpolation
-            if df.isnull().values.any():
-                self.logger.warning(f"Interpolating missing values for {sensor_name} in recording {recording.recording_name}.")
-                df.interpolate(method="linear", limit_direction="forward", axis=0, inplace=True)
-                df.bfill(inplace=True)
-                df.ffill(inplace=True)
-                
             # Check for large time gaps in the data
             time_values = df["seconds_elapsed"]
             time_diffs = time_values.diff()
-            
-            if any (time_diffs > self.max_acceptable_gap):
+            if any(time_diffs > self.max_acceptable_gap):
                 self.logger.warning(f"Recording {recording.recording_name} contains time gaps greater than 100 ms. Skipping.")
-                return False
-            
+                return False    
+                
             # Check for allowed duration of the recording
             recording_duration = time_values.max() - time_values.min()
             if recording_duration > self.max_duration:
@@ -275,6 +267,13 @@ class RecordingSegmenter:
             if recording_duration < self.min_duration:
                 self.logger.warning(f"Recording {recording.recording_name} is shorter than {self.min_duration} seconds. Skipping.")
                 return False
+            
+            # Handle missing values (e.g., NaN) using linear interpolation
+            if df.isnull().values.any():
+                self.logger.warning(f"Interpolating missing values for {sensor_name} in recording {recording.recording_name}.")
+                df.interpolate(method="linear", limit_direction="forward", axis=0, inplace=True)
+                df.bfill(inplace=True)
+                df.ffill(inplace=True)
         
         return True
     
@@ -312,19 +311,20 @@ class RecordingSegmenter:
         # Resample the data to a common time scale
         acc_data = next(df for name, df in recording.data if "Accelerometer" in name)
         gravity_data = next(df for name, df in recording.data if "Gravity" in name)
-        total_acc_data = next(df for name, df in recording.data if "TotalAcceleration" in name)
+        # total_acc_data = next(df for name, df in recording.data if "TotalAcceleration" in name)
         gyro_data = next(df for name, df in recording.data if "Gyroscope" in name)
         
         common_time = np.union1d(
             np.union1d(acc_data["seconds_elapsed"], gravity_data["seconds_elapsed"]),
-            np.union1d(total_acc_data["seconds_elapsed"], gyro_data["seconds_elapsed"]),
+            np.union1d(gyro_data["seconds_elapsed"]),
+            # np.union1d(total_acc_data["seconds_elapsed"], gyro_data["seconds_elapsed"]),
         )
         
         acc_data = np.interp(common_time, acc_data["seconds_elapsed"], acc_data["magnitude"])
         gravity_data_x = np.interp(common_time, gravity_data["seconds_elapsed"], gravity_data["x"])
         gravity_data_y = np.interp(common_time, gravity_data["seconds_elapsed"], gravity_data["y"])
         gravity_data_z = np.interp(common_time, gravity_data["seconds_elapsed"], gravity_data["z"])
-        total_acc_data = np.interp(common_time, total_acc_data["seconds_elapsed"], total_acc_data["magnitude"])
+        # total_acc_data = np.interp(common_time, total_acc_data["seconds_elapsed"], total_acc_data["magnitude"])
         gyro_data = np.interp(common_time, gyro_data["seconds_elapsed"], gyro_data["magnitude"])
         
         data = {
@@ -332,7 +332,7 @@ class RecordingSegmenter:
             "gravity_x": gravity_data_x,
             "gravity_y": gravity_data_y,
             "gravity_z": gravity_data_z,
-            "total_acc": total_acc_data,
+            # "total_acc": total_acc_data,
             "gyro": gyro_data
         }
         
@@ -782,7 +782,8 @@ class RecordingSegmenter:
                     df["magnitude"] = np.sqrt(df["x"]**2 + df["y"]**2 + df["z"]**2)
                 
                 # Add azimuth and inclination columns for accelerometer, gravity, and total acceleration
-                if "Accelerometer.csv" in name or "Gravity.csv" in name or "TotalAcceleration.csv" in name:
+                # if "Accelerometer.csv" in name or "Gravity.csv" in name or "TotalAcceleration.csv" in name:
+                if "Accelerometer.csv" in name or "Gravity.csv" in name:
                     df['azimuth'] = np.arctan2(df["y"], df["x"]) * (180 / np.pi)
                     
                     with np.errstate(invalid='ignore'):
