@@ -105,6 +105,7 @@ class RecordingSegmenter:
         self.max_acceptable_gap = 1 / 10  # min 10 Hz sampling rate
         self.max_duration = 360.0  # 6 minutes
         self.min_duration = 60.0  # 1 minute
+        self.walking_gradient_threshold = 1.0 # threshold for cutting walking steps
         
         self._setup_logger(log_level)
         self.__post_init__()
@@ -373,14 +374,14 @@ class RecordingSegmenter:
         walking_1_segment = self._detect_segment(
             data, "walking_1", common_time,
             start_time=on_desk_audio_segment[1], end_time=common_time[-1], 
-            min_duration=6, max_duration=13)
+            min_duration=6, max_duration=12)
         if walking_1_segment == (None, None):
-            walking_1_segment = (on_desk_audio_segment[1] + 10, on_desk_audio_segment[1] + 20)
+            walking_1_segment = (on_desk_audio_segment[1] + 5, on_desk_audio_segment[1] + 15)
         
         walking_2_segment = self._detect_segment(
             data, "walking_2", common_time,
-            start_time=walking_1_segment[1], end_time=common_time[-1], 
-            min_duration=6, max_duration=13)
+            start_time=walking_1_segment[1], end_time=walking_1_segment[1] + 15, 
+            min_duration=6, max_duration=12)
         if walking_2_segment == (None, None):
             walking_2_segment = (walking_1_segment[1] + 5, walking_1_segment[1] + 15)
         
@@ -532,6 +533,7 @@ class RecordingSegmenter:
                 if candidate_subsegs:
                     chosen_subseg = None
                     chosen_variability = None
+                    chosen_gradient_sum = None
                     
                     for (sub_start, sub_end) in candidate_subsegs:
                         sub_indices = np.where((common_time >= sub_start) & (common_time <= sub_end))[0]
@@ -544,8 +546,11 @@ class RecordingSegmenter:
                             if step in ["walking_1", "walking_2"] and num_peaks < 5:
                                 continue 
                             
+                            gradient_sum = np.sum(np.abs(np.gradient(sub_acc_data)))
+                            
                             if chosen_variability is None:
                                 chosen_variability = sub_std
+                                chosen_gradient_sum = gradient_sum
                                 chosen_subseg = (sub_start, sub_end)
                             else:
                                 if step in ["on_hand", "on_hand_audio", "on_desk", "on_desk_audio"]:
@@ -553,13 +558,40 @@ class RecordingSegmenter:
                                         chosen_variability = sub_std
                                         chosen_subseg = (sub_start, sub_end)
                                 elif step in ["walking_1", "walking_2"]:
-                                    if sub_std > chosen_variability:
-                                        chosen_variability = sub_std
+                                    if gradient_sum > chosen_gradient_sum:
+                                        chosen_gradient_sum = gradient_sum
                                         chosen_subseg = (sub_start, sub_end)
                     
                     if chosen_subseg:
+                        # if step in ["walking_1", "walking_2"]:
+                        #     sub_start, sub_end = chosen_subseg
+                        #     sub_indices = np.where((common_time >= sub_start) & (common_time <= sub_end))[0]
+                        #     sub_acc_data = data["acc"][sub_indices]
+                        #     gradient = np.gradient(sub_acc_data)
+                            
+                        #     # Refine the segment by cutting from the right
+                        #     right_cut_index = len(sub_acc_data)
+                        #     last_significant_index = right_cut_index
+                        #     for i in range(len(sub_acc_data) - 1, -1, -1):
+                        #         if np.abs(gradient[i]) > self.walking_gradient_threshold:
+                        #             last_significant_index = i + 1
+                        #         elif last_significant_index != right_cut_index:
+                        #             right_cut_index = last_significant_index
+                        #             break
+                            
+                        #     # Refine the segment by cutting from the left
+                        #     left_cut_index = 0
+                        #     for i in range(len(sub_acc_data)):
+                        #         if np.abs(gradient[i]) > self.walking_gradient_threshold:
+                        #             left_cut_index = i
+                        #             break
+                            
+                        #     refined_sub_start = common_time[sub_indices[left_cut_index]]
+                        #     refined_sub_end = common_time[sub_indices[right_cut_index - 1]]
+                        #     chosen_subseg = (refined_sub_start, refined_sub_end)
+                        
                         valid_segments.append(chosen_subseg)
-        
+
         # If no valid segment found, return None
         if not valid_segments:
             return None, None
@@ -741,9 +773,9 @@ class RecordingSegmenter:
         if user_action[0] == 'done':
             return steps, ""
         elif user_action[0] == 'skip':
-            return None, 'skip'
-        elif user_action[0] == 'skip':
-            return None, 'cancel'
+            return None, "skip"
+        elif user_action[0] == 'cancel':
+            return None, "cancel"
 
     def _segment_data(self, recording: Recording, steps: Dict[str, Tuple[float, float]]):
         """ Segment the recording's data according to the detected steps and save each in a different directory. """
