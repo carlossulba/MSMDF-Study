@@ -18,17 +18,17 @@ from dataclasses import dataclass, field, asdict, is_dataclass
 
 class FingerprintSetting(Enum):
     """Available data collection settings"""
-    ON_HAND = "on hand"
-    ON_HAND_AUDIO = "on hand audio"
-    ON_DESK = "on desk"
-    ON_DESK_AUDIO = "on desk audio"
+    ON_HAND = "on_hand"
+    ON_HAND_AUDIO = "on_hand_audio"
+    ON_DESK = "on_desk"
+    ON_DESK_AUDIO = "on_desk_audio"
     WALKING = "walking" 
     
 class FingerprintSensor(Enum):
     """Supported data stream types"""
     ACCELEROMETER = "accelerometer"
     GRAVITY = "gravity"
-    TOTAL_ACCELERATION = "total_acceleration"
+    # TOTAL_ACCELERATION = "total_acceleration"
     GYROSCOPE = "gyroscope"
 
 class FingerprintDataStream(Enum):
@@ -222,8 +222,8 @@ class FingerprintExtractor:
         # Get the directory paths for the given setting
         if setting.value == "walking":
             setting_dirs = [
-                os.path.join(self.config.data_location, "walking 1"),
-                os.path.join(self.config.data_location, "walking 2")
+                os.path.join(self.config.data_location, "walking_1"),
+                os.path.join(self.config.data_location, "walking_2")
             ]
         else:
             setting_dirs = [os.path.join(self.config.data_location, setting.value)]
@@ -235,15 +235,26 @@ class FingerprintExtractor:
                 # Extract fingerprint for a single recording directory
                 for recording_directory in os.listdir(setting_dir):
                     
-                    # Determine the device ID
+                    # Determine the device key
                     recording_path = os.path.join(setting_dir, recording_directory)
                     recording_name = os.path.basename(recording_path)
-                    match = re.search(r'-\s*([a-zA-Z0-9\s]+)_([a-f0-9\-]+)-', recording_name)
+                    
+                    match = re.search(
+                        rf'(?:walking_[12] - |{re.escape(setting.value)} - )([a-zA-Z0-9_\s\.]+)\s*- ([a-f0-9\-]+) - ([a-zA-Z0-9\-\s\(\)]+) - ([0-9_]+)(?: - ([a-zA-Z0-9_\.]+))?',
+                        recording_name
+                    )
+                    
                     if match:
-                        device_id = f"{match.group(1).strip()}_{match.group(2).strip()}"
+                        pseudonym = match.group(1).strip()
+                        device_id = match.group(2).strip()
+                        device_name = match.group(3).strip()
+                        timestamp = match.group(4).strip()
+                        extra_info = match.group(5).strip() if match.group(5) else ""
+
+                        device_key = f"{pseudonym}_{device_id}"
                     else:
                         self.logger.error(f"Invalid recording name format: {recording_name}")
-                        device_id = f"unknown_device_{recording_name}"
+                        device_key = f"invalid_name_format_{recording_name}"
                     
                     try:
                         # Extract fingerprints for the current recording
@@ -253,11 +264,11 @@ class FingerprintExtractor:
                         fingerprints_from_recording = []
                         fingerprints_from_recording_dict = {}
                     
-                    # Accumulate fingerprints for the same device ID
-                    if device_id in extracted_fingerprints_per_setting:
-                        extracted_fingerprints_per_setting[device_id].append((fingerprints_from_recording, fingerprints_from_recording_dict))
+                    # Accumulate fingerprints for the same device key
+                    if device_key in extracted_fingerprints_per_setting:
+                        extracted_fingerprints_per_setting[device_key].append((fingerprints_from_recording, fingerprints_from_recording_dict))
                     else:
-                        extracted_fingerprints_per_setting[device_id] = [(fingerprints_from_recording, fingerprints_from_recording_dict)]
+                        extracted_fingerprints_per_setting[device_key] = [(fingerprints_from_recording, fingerprints_from_recording_dict)]
                 
             else:
                 self.logger.error(f"Error: Directory not found: {setting_dir}")
@@ -793,6 +804,34 @@ class FingerprintExtractor:
         spectral_roughness_value = np.mean(dissonance_values)
         return spectral_roughness_value
 
+    def _filter_devices_with_few_recordings(self, extracted_fingerprints: Dict[str, List[Tuple[List[np.ndarray], Dict[int, Dict[str, Any]]]]], min_recordings: int = 6) -> Dict[str, List[Tuple[List[np.ndarray], Dict[int, Dict[str, Any]]]]]:
+        """
+        Filter out devices with fewer than the specified number of fingerprints.
+        
+        Args:
+            extracted_fingerprints: Dictionary of extracted fingerprints
+            min_recordings: Minimum number of recordings required to keep a device
+        """
+        filtered_fingerprints = {}
+        
+        for setting, devices in extracted_fingerprints.items():
+            filtered_devices = {}
+        
+            for device_key, recordings in devices.items():
+                if len(recordings) >= min_recordings:
+                    filtered_devices[device_key] = recordings
+                else:
+                    self.logger.info(f"Device {device_key} in setting {setting} has only {len(recordings)} recordings and will be excluded.")
+        
+            if filtered_devices:
+                filtered_fingerprints[setting] = filtered_devices
+            else:
+                self.logger.info(
+                    f"No devices in setting '{setting}' have at least {min_recordings} fingerprints. The setting will be excluded."
+                )
+        
+        return filtered_fingerprints
+
     def print_extraction_summary(self, extracted_fingerprints) :
         """Print a summary of the extraction process and the structure of fingerprints_dict."""
 
@@ -968,20 +1007,21 @@ if __name__ == "__main__":
     fingerprint_config = FingerprintConfig(
         data_location="../Data/raw data/separated by setting",
         
-        fingerprint_length=9.0,
+        fingerprint_length=8.0,
         sampling_rate=100,
         
-        enabled_settings=set([FingerprintSetting.ON_HAND, FingerprintSetting.ON_DESK]),
-        enabled_sensors=set([FingerprintSensor.ACCELEROMETER, FingerprintSensor.GYROSCOPE]),
+        enabled_settings=set(FingerprintSetting),
+        enabled_sensors=set([FingerprintSensor.ACCELEROMETER]),
         enabled_streams=set([FingerprintDataStream.X]),
-        enabled_features=set([FingerprintFeature.MEAN, FingerprintFeature.RMS, FingerprintFeature.STD_DEV])
+        enabled_features=set([FingerprintFeature.MAXIMUM])
     )
     
     # Initialize extractor
-    extractor = FingerprintExtractor(fingerprint_config, log_level='INFO')
+    extractor = FingerprintExtractor(fingerprint_config, log_level='WARNING')
     
     # Extract fingerprints
     fingerprints = extractor.extract_fingerprints()
+    fingerprints = extractor._filter_devices_with_few_recordings(fingerprints, 5)
 
     # Print extraction summary
     extractor.print_extraction_summary(fingerprints)
