@@ -147,7 +147,7 @@ def main():
     
     # Create visualizer and generate plots
     visualizer = FingerprintVisualizer(data_path)
-    visualizer.visualize(save=True)
+    visualizer.visualize(save=False)
 
 if __name__ == "__main__":
     main()
