@@ -955,7 +955,7 @@ class FingerprintExtractor:
         Args:
             extracted_fingerprints: Dictionary of extracted fingerprints
             output_dir: Directory to save the fingerprints
-            format: Output format ('pickle' or 'json')
+            format: Output format ('pickle')
         """
         
         os.makedirs(output_dir, exist_ok=True)
@@ -964,7 +964,7 @@ class FingerprintExtractor:
         
         data_to_save = {
             'fingerprints': extracted_fingerprints,
-            'config': self.config  # Convert the configuration to a serializable dictionary
+            'config': self.config
         }
         
         if format == 'pickle':
@@ -972,34 +972,9 @@ class FingerprintExtractor:
             with open(file_path, 'wb') as f:
                 pickle.dump(data_to_save, f)
             print(f"Extracted fingerprints saved to {file_path} in pickle format.")
-        elif format == 'json':
-            raise NotImplementedError("JSON serialization is not yet implemented.")
-            # Since JSON does not support certain data types, we need to convert them to serializable formats
-            def convert_to_serializable(obj):
-                if isinstance(obj, np.ndarray):
-                    return obj.tolist()
-                elif is_dataclass(obj):
-                    return asdict(obj)
-                elif isinstance(obj, set):
-                    return list(obj)
-                elif isinstance(obj, Enum):
-                    return obj.value
-                elif isinstance(obj, datetime):
-                    return obj.isoformat()
-                elif isinstance(obj, dict):
-                    return {k: convert_to_serializable(v) for k, v in obj.items()}
-                elif isinstance(obj, (list, tuple)):
-                    return [convert_to_serializable(v) for v in obj]
-                else:
-                    return obj  # Assuming it's a basic data type
-            
-            json_data = convert_to_serializable(data_to_save)
-            file_path = os.path.join(output_dir, f'extracted_fingerprints_{current_date}.json')
-            with open(file_path, 'w') as f:
-                json.dump(json_data, f, indent=2)
-            print(f"Extracted fingerprints saved to {file_path} in JSON format.")
         else:
             self.logger.error(f"Unsupported format '{format}'. Supported formats are 'pickle' and 'json'.")        
+
 
 # local main
 if __name__ == "__main__":
