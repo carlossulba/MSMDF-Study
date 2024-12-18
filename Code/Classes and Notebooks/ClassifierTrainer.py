@@ -936,7 +936,7 @@ class ClassifierTrainer:
 if __name__ == "__main__":
     # Configure classifier training and evaluation
     classification_config = EvaluationConfig(        
-        num_devices=5,
+        num_devices=20,
         training_set_ratio=0.8,
         known_unknown_ratio=1.0,
         
@@ -963,7 +963,7 @@ if __name__ == "__main__":
     evaluation_results = trainer.evaluate_classifiers(X_test, y_test, method=EvaluationMethod.CLASSIC)
     
     # Plot evaluation summary
-    trainer.plot_evaluation_summary(evaluation_results, classification_config, dataset_config, "../Results/ClassifierTrainer/Plots/", save=True)
+    trainer.plot_evaluation_summary(evaluation_results, classification_config, dataset_config, "Results/ClassifierTrainer/Plots/", save=True)
     print("Evaluation completed successfully.\n")
     
     
