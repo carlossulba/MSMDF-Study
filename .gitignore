@@ -1,3 +1,5 @@
+Results/ClassifierTrainer/Classifiers/*
+
 # Python-specific ignores
 *.pyc
 *.pyo
