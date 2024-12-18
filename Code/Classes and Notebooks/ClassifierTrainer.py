@@ -7,8 +7,11 @@ import os
 import pickle
 import json
 import matplotlib.pyplot as plt
+import seaborn as sns
 from typing import Dict, Tuple, Set, Any
 from math import inf
+import warnings
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.model_selection import (GridSearchCV, RandomizedSearchCV, StratifiedKFold, StratifiedShuffleSplit, train_test_split, cross_val_predict, cross_validate)
 from sklearn.metrics import (accuracy_score, precision_score, recall_score, f1_score, classification_report, confusion_matrix, ConfusionMatrixDisplay)
 from sklearn.preprocessing import StandardScaler, LabelEncoder
@@ -22,9 +25,12 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.neural_network import MLPClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.impute import SimpleImputer
-import xgboost as xgb
+# import xgboost as xgb
 import logging
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from matplotlib.colors import ListedColormap
+
 
 from FingerprintExtractor import FingerprintExtractor, FingerprintConfig, FingerprintSetting, FingerprintSensor, FingerprintDataStream, FingerprintFeature
 
@@ -32,7 +38,7 @@ from FingerprintExtractor import FingerprintExtractor, FingerprintConfig, Finger
 class Classifiers(Enum):
     """Supported classifiers for training and evaluation."""
     # Linear Models
-    LOGISTIC_REGRESSION = LogisticRegression
+    # LOGISTIC_REGRESSION = LogisticRegression
     STOCHASTIC_GRADIENT_DESCENT = SGDClassifier
     LINEAR_DISCRIMINANT_ANALYSIS = LinearDiscriminantAnalysis
     
@@ -55,7 +61,7 @@ class Classifiers(Enum):
     EXTRA_TREES = ExtraTreesClassifier
     
     # Gradient Boosting
-    XGBOOST = xgb.XGBClassifier
+    # XGBOOST = xgb.XGBClassifier
     
     # Neural Networks
     MULTILAYER_PERCEPTRON = MLPClassifier # (hidden_layer_sizes=(100,100))
@@ -311,7 +317,7 @@ class ClassifierTrainer:
             selected_devices = encoder.classes_[:self.config.num_devices]
             selected_indices = [i for i, label in enumerate(labels) if label in selected_devices]
             subset_features = features[selected_indices]
-            subset_labels = [labels[i] for i in selected_indices]
+            subset_labels = encoded_labels[selected_indices]
             
             # Split devices into known and unknown
             known_device_count = int(self.config.num_devices * self.config.known_unknown_ratio)
@@ -323,10 +329,12 @@ class ClassifierTrainer:
                 )
 
             known_devices = selected_devices[:known_device_count]
+            known_device_indices = [encoder.transform([device])[0] for device in known_devices]
             unknown_devices = selected_devices[known_device_count:]
+            unknown_device_indices = [encoder.transform([device])[0] for device in unknown_devices]
 
-            known_indices = [i for i, label in enumerate(subset_labels) if label in known_devices]
-            unknown_indices = [i for i, label in enumerate(subset_labels) if label in unknown_devices]
+            known_indices = [i for i, label in enumerate(subset_labels) if label in known_device_indices]
+            unknown_indices = [i for i, label in enumerate(subset_labels) if label in unknown_device_indices]
 
             # Ensure there is data for training and testing
             if len(known_indices) < 2 :
@@ -338,11 +346,11 @@ class ClassifierTrainer:
 
             # Separate known data
             known_features = subset_features[known_indices]
-            known_labels = [subset_labels[i] for i in known_indices]
+            known_labels = subset_labels[known_indices]
 
             # Separate unknown data
             unknown_features = subset_features[unknown_indices]
-            unknown_labels = [subset_labels[i] for i in unknown_indices]
+            unknown_labels = subset_labels[unknown_indices]
 
             # Split the dataset into training and testing set
             X_train, X_test_known, y_train, y_test_known = train_test_split(
@@ -362,13 +370,13 @@ class ClassifierTrainer:
             self.logger.info(f"Number of classes: {self.config.num_devices}")
             self.logger.info(f"Known devices: {len(known_devices)}, Unknown devices: {len(unknown_devices)}\n")
             
-            return X_train, X_test, y_train, y_test, label_encoding
+            return X_train, X_test, y_train, y_test, label_encoding, config
         
         except Exception as e:
             self.logger.error(f"Error during preprocessing: {e}")
             raise
     
-    def train_classifiers(self, X_train: np.ndarray, y_train: np.ndarray, method:TrainingMethod, scaling:bool = True) -> dict:
+    def train_classifiers(self, X_train: np.ndarray, y_train: np.ndarray, method:TrainingMethod) -> dict:
         """
         Train specified classifiers with the given method.
         
@@ -381,7 +389,7 @@ class ClassifierTrainer:
         Returns:
             dict: A dictionary of trained classifier models.
         """
-        self.logger.info(f"Training classifiers using '{method.name.lower()}' method...")
+        self.logger.info(f"\nTraining classifiers using '{method.name.lower()}' method...")
         
         # Initialize the classifiers and hyperparameter grids
         classifiers_to_train = self._initialize_classifiers()
@@ -391,52 +399,64 @@ class ClassifierTrainer:
         for classifier_name, classifier_class in classifiers_to_train.items():
             # Create pipeline to avoid data leakage during scaling
             steps = []
-            if scaling:
-                steps.append(('scaler', StandardScaler()))
+            steps.append(('scaler', StandardScaler()))
             steps.append(('classifier', classifier_class))
             pipeline = Pipeline(steps)
         
             # Train the classifier based on the chosen method
             self.logger.info(f"Training {classifier_name} ...")
             try:
-                if method == TrainingMethod.CLASSIC:
-                    pipeline.fit(X_train, y_train)                
-                    self.trained_classifiers[classifier_name] = pipeline
-                        
-                elif method == TrainingMethod.GRID_SEARCH:
-                    grid_search = GridSearchCV(
-                        estimator=pipeline,
-                        param_grid=self.hyperparameter_grids.get(classifier_name, {}),
-                        scoring='f1_macro',
-                        n_jobs=-1,
-                        verbose=0,
-                        cv=self.config.cv_folds
-                    )
-                    grid_search.fit(X_train, y_train)
-                    self.trained_classifiers[classifier_name] = grid_search.best_estimator_
-                    
-                elif method == TrainingMethod.RANDOM_SEARCH:                                        
-                    random_search  = RandomizedSearchCV(
-                        estimator=pipeline,
-                        param_distributions=self.hyperparameter_grids.get(classifier_name, {}),
-                        n_iter=10,
-                        scoring='f1_macro',
-                        n_jobs=-1,
-                        verbose=0,
-                        cv=self.config.cv_folds,
-                        random_state=self.config.random_state
-                    )
-                    random_search.fit(X_train, y_train)
-                    self.trained_classifiers[classifier_name] = random_search.best_estimator_
+                with warnings.catch_warnings(record=True) as caught_warnings:
+                    warnings.simplefilter("always")
                 
-                else:
-                    raise ValueError(f"Invalid training method: ({method}). Valid options are {set(TrainingMethod)}")
+                    if method == TrainingMethod.CLASSIC:
+                        pipeline.fit(X_train, y_train)                
+                        self.trained_classifiers[classifier_name] = pipeline
+                        
+                    elif method == TrainingMethod.GRID_SEARCH:
+                        grid_search = GridSearchCV(
+                            estimator=pipeline,
+                            param_grid=self.hyperparameter_grids.get(classifier_name, {}),
+                            scoring='accuracy',
+                            n_jobs=-1,
+                            verbose=0,
+                            cv=StratifiedKFold(n_splits=self.config.cv_folds)
+                        )
+                        grid_search.fit(X_train, y_train)
+                        self.trained_classifiers[classifier_name] = grid_search.best_estimator_
+                        
+                    elif method == TrainingMethod.RANDOM_SEARCH:                                        
+                        random_search  = RandomizedSearchCV(
+                            estimator=pipeline,
+                            param_distributions=self.hyperparameter_grids.get(classifier_name, {}),
+                            n_iter=10,
+                            scoring='accuracy',
+                            n_jobs=-1,
+                            verbose=0,
+                            cv=StratifiedKFold(n_splits=self.config.cv_folds),
+                            random_state=self.config.random_state
+                        )
+                        random_search.fit(X_train, y_train)
+                        self.trained_classifiers[classifier_name] = random_search.best_estimator_
+                    
+                    else:
+                        raise ValueError(f"Invalid training method: ({method}). Valid options are {set(TrainingMethod)}")
+
+                    # Check for convergence warnings
+                    convergence_warnings = [
+                        warning for warning in caught_warnings 
+                        if issubclass(warning.category, ConvergenceWarning)
+                    ]
+                    
+                    if convergence_warnings:
+                        self.logger.warning(f"  {classifier_name} did not converge. Warnings: {[str(w.message) for w in convergence_warnings]}")
+                        continue
 
             except Exception as e:
                 self.logger.error(f"Failed to train {classifier_name}: {e}")
                 continue
             
-            self.logger.info(f"Trained {classifier_name} successfully.")
+            self.logger.info(f"  Trained {classifier_name} successfully.")
             
         return self.trained_classifiers
     
@@ -525,7 +545,7 @@ class ClassifierTrainer:
         hyperparameter_grids = {
             # Linear Models
             'logistic_regression': {
-                'classifier__C': [0.01, 0.1, 1, 10],
+                'classifier__C': [0.1, 1, 10],
                 'classifier__solver': ['lbfgs', 'saga'],
                 'classifier__max_iter': [100, 200, 500]
             },
@@ -630,7 +650,7 @@ class ClassifierTrainer:
         Returns:
             dict: A dictionary of evaluation results for the classifiers.
         """
-        self.logger.info(f"Evaluating classifiers using '{method.name.lower()}' method...")
+        self.logger.info(f"\nEvaluating classifiers using '{method.name.lower()}' method...")
         
         # Use the specified classifiers or default to trained classifiers
         classifiers_to_evaluate = classifiers or self.trained_classifiers
@@ -691,7 +711,7 @@ class ClassifierTrainer:
         }
 
         # Get per-class statistics
-        class_report = classification_report(y_true, y_pred, output_dict=True)
+        class_report = classification_report(y_true, y_pred, output_dict=True, zero_division=0)
         
         # Create confusion matrix
         conf_matrix = confusion_matrix(y_true, y_pred)
@@ -702,7 +722,7 @@ class ClassifierTrainer:
             'Confusion Matrix': conf_matrix
         }
 
-    def print_evaluation_summary(self, results: dict = None) -> None:
+    def print_evaluation_summary(self, results: dict = None, print_per_class: bool = False, print_conf_matrix: bool = False)  -> None:
         """Print a summary of evaluation results."""
         
         # Use the specified classifiers or default to trained classifiers
@@ -729,34 +749,139 @@ class ClassifierTrainer:
             for metric_name, metric_value in overall_metrics.items():
                 print(f"  {metric_name}: {metric_value:.4f}")
             
-            print("Per-Class Metrics:")
-            per_class_metrics = performance_metrics.get('Per Class Metrics', {})
-            for class_label, class_metrics in per_class_metrics.items():
-                if class_label not in ['accuracy', 'macro avg', 'weighted avg']:
-                    print(f"  Class {class_label}:")
-                    print(f"    Precision: {class_metrics['precision']:.4f}")
-                    print(f"    Recall: {class_metrics['recall']:.4f}")
-                    print(f"    F1 Score: {class_metrics['f1-score']:.4f}")
-                    print(f"    Support: {class_metrics['support']}")
+            if print_per_class == True:
+                print("Per-Class Metrics:")
+                per_class_metrics = performance_metrics.get('Per Class Metrics', {})
+                for class_label, class_metrics in per_class_metrics.items():
+                    if class_label not in ['accuracy', 'macro avg', 'weighted avg']:
+                        print(f"  Class {class_label}:")
+                        print(f"    Precision: {class_metrics['precision']:.4f}")
+                        print(f"    Recall: {class_metrics['recall']:.4f}")
+                        print(f"    F1 Score: {class_metrics['f1-score']:.4f}")
+                        print(f"    Support: {class_metrics['support']}")
             
-            print("Confusion Matrix:")
-            conf_matrix = performance_metrics.get('Confusion Matrix', [])
-            # Prepare column and row labels
-            header = [" "] + [f"Predicted {i}" for i in range(len(conf_matrix))]
-            rows = [f"Actual {i}" for i in range(len(conf_matrix))]
-            
-            # Format the matrix into rows
-            formatted_rows = []
-            for row_label, row_values in zip(rows, conf_matrix):
-                formatted_rows.append(f"{row_label:10} " + " ".join(f"{value:8}" for value in row_values))
-            
-            # Combine header and rows
-            header_str = " ".join(f"{col:8}" for col in header)
-            matrix_str = "\n".join(formatted_rows)
-            
-            print(f"  {header_str}\n  {matrix_str}")
+            if print_conf_matrix == True:
+                print("Confusion Matrix:")
+                conf_matrix = performance_metrics.get('Confusion Matrix', [])
+                # Prepare column and row labels
+                header = [" "] + [f"Predicted {i}" for i in range(len(conf_matrix))]
+                rows = [f"Actual {i}" for i in range(len(conf_matrix))]
+                
+                # Format the matrix into rows
+                formatted_rows = []
+                for row_label, row_values in zip(rows, conf_matrix):
+                    formatted_rows.append(f"{row_label:10} " + " ".join(f"{value:8}" for value in row_values))
+                
+                # Combine header and rows
+                header_str = " ".join(f"{col:8}" for col in header)
+                matrix_str = "\n".join(formatted_rows)
+                
+                print(f"  {header_str}\n  {matrix_str}")
             
             print("-" * 50)
+
+    def plot_evaluation_summary(self, results: dict = None, eval_config : EvaluationConfig = None, dataset_config: FingerprintConfig = None, save_directory: str = None) -> None:
+        """ Plot evaluation results. """
+        results_to_print = results or self.evaluation_results
+        evaluation_config = eval_config  or self.config
+        
+        if not results_to_print:
+            raise ValueError("No evaluation results to plot. Please evaluate or provide results.")
+
+        # Define colors of heatmap
+        custom_colors = ["#F7FFE8", "#FFC300", "#FF5733", "#C70039", "#900C3F", "#581845"]
+        custom_cmap = ListedColormap(custom_colors)
+
+        # Create a separate plot for each classifier
+        for classifier_name, performance_metrics in results_to_print.items():
+            # Setup figure
+            fig = plt.figure(figsize=(15, 12), constrained_layout=True)
+            gs = fig.add_gridspec(nrows=3, ncols=2, 
+                                height_ratios=[2, 4, 4], 
+                                width_ratios=[1, 1])
+            
+            # Display Configurations
+            config_ax = fig.add_subplot(gs[0, :])
+            
+            eval_config_text = (
+                f"Evaluation Configuration\n"
+                f"Number of Devices: {evaluation_config .num_devices} | "
+                f"Training Set Ratio: {evaluation_config .training_set_ratio} | "
+                f"Known-Unknown Ratio: {evaluation_config .known_unknown_ratio} | "
+                f"Cross-Validation Folds: {evaluation_config .cv_folds} | "
+                f"Random State: {evaluation_config .random_state}"
+            )
+            if dataset_config:
+                dataset_config_text = (
+                    f"\nDataset Configuration:\n"
+                    f"Fingerprint Length: {dataset_config.fingerprint_length} | "
+                    f"Sampling Rate: {dataset_config.sampling_rate}\n"
+                    f"Enabled Settings: {', '.join(map(str, dataset_config.enabled_settings))}\n"
+                    f"Enabled Sensors: {', '.join(map(str, dataset_config.enabled_sensors))}\n"
+                    f"Enabled Streams: {', '.join(map(str, dataset_config.enabled_streams))}\n"
+                    f"Enabled Features: {', '.join(map(str, dataset_config.enabled_features))}"
+                )
+            else:
+                dataset_config_text = "\nNo Dataset Configuration Available"
+            
+            full_config_text = eval_config_text + dataset_config_text
+            
+            config_ax.text(0.5, 0.5, full_config_text, 
+                        horizontalalignment='center', 
+                        verticalalignment='center', 
+                        fontsize=8, 
+                        transform=config_ax.transAxes)
+            config_ax.axis('off')
+            
+            # Overall Metrics Bar Plot
+            metrics_ax = fig.add_subplot(gs[1, 0])
+            overall_metrics = performance_metrics.get('Overall Metrics', {})
+            metrics_names = list(overall_metrics.keys())
+            metrics_values = list(overall_metrics.values())
+            
+            bars = metrics_ax.bar(metrics_names, metrics_values, color="#C70039")
+            metrics_ax.set_title(f'{classifier_name} - Overall Metrics')
+            metrics_ax.set_ylabel('Score')
+            metrics_ax.set_ylim(0.00, 1.00)
+            metrics_ax.tick_params(axis='x', rotation=45)
+            
+            for bar in bars:
+                height = bar.get_height()
+                metrics_ax.text(bar.get_x() + bar.get_width()/2., height,
+                                f'{height:.2f}',
+                                ha='center', va='bottom')
+            
+            # Confusion Matrix Heatmap
+            conf_matrix_ax = fig.add_subplot(gs[1:, 1])
+            conf_matrix = performance_metrics.get('Confusion Matrix', [])
+            sns.heatmap(conf_matrix, 
+                        annot=True, 
+                        fmt='d', 
+                        cmap=custom_cmap, 
+                        ax=conf_matrix_ax, 
+                        cbar=True)
+            conf_matrix_ax.set_title(f'{classifier_name} - Confusion Matrix')
+            conf_matrix_ax.set_xlabel('Predicted Label')
+            conf_matrix_ax.set_ylabel('Actual Label')
+            
+            # Set an overall title
+            fig.suptitle(f'Evaluation Results for {classifier_name}', fontsize=16)
+            
+        
+            # Save the plot
+            if save_directory:
+                # Ensure the directory exists
+                os.makedirs(save_directory, exist_ok=True)
+                
+                # Generate a unique filename
+                current_date = datetime.now().strftime('%Y-%m-%d__%H-%M')
+                filename = f"classifier_evaluation_{classifier_name}_{current_date}.png"
+                filepath = os.path.join(save_directory, filename)
+                
+                plt.savefig(filepath, dpi=300, bbox_inches='tight')
+                print(f"Plot saved to: {filepath}")
+        
+        plt.show()
 
 
 # local main
@@ -767,7 +892,7 @@ if __name__ == "__main__":
         training_set_ratio=0.8,
         known_unknown_ratio=1.0,
         
-        cv_folds=5,
+        cv_folds=2,
         random_state=42,
         
         classifiers=set(Classifiers)
@@ -777,8 +902,8 @@ if __name__ == "__main__":
     trainer = ClassifierTrainer(classification_config, log_level='INFO')
 
     # Load and preprocess the data
-    X_train, X_test, y_train, y_test, label_encoding = trainer.load_and_preprocess_data(
-        data="../Data/extracted fingerprints/extracted_fingerprints_2024-11-26__03-33.pkl"
+    X_train, X_test, y_train, y_test, label_encoding, dataset_config = trainer.load_and_preprocess_data(
+        data="../Data/extracted fingerprints/extracted_fingerprints_2024-12-17__16-36.pkl"
     )
 
     # Train classifiers
@@ -788,5 +913,11 @@ if __name__ == "__main__":
     evaluation_results = trainer.evaluate_classifiers(X_test, y_test, method=EvaluationMethod.CLASSIC)
 
     # Print evaluation summary
-    trainer.print_evaluation_summary()
+    trainer.print_evaluation_summary(evaluation_results, print_per_class = False, print_conf_matrix = False)
+    
+    # Plot results
+    trainer.plot_evaluation_summary(evaluation_results, classification_config, dataset_config, "../Results/ClassifierTrainer/")
+    
+    print("Evaluation complete.")
+    
     
