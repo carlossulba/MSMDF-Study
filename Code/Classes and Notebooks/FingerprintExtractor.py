@@ -973,7 +973,7 @@ class FingerprintExtractor:
                 pickle.dump(data_to_save, f)
             print(f"Extracted fingerprints saved to {file_path} in pickle format.")
         else:
-            self.logger.error(f"Unsupported format '{format}'. Supported formats are 'pickle' and 'json'.")        
+            self.logger.error(f"Unsupported format '{format}'. Supported formats are 'pickle'.")
 
 
 # local main

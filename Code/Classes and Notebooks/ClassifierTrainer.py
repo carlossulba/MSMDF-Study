@@ -162,6 +162,7 @@ class ClassifierTrainer:
             log_level: Logging level ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
         """
         self.config = config
+        self.dataset_config = None
         self.hyperparameter_grids = {}
 
         self.trained_classifiers = {}
@@ -210,16 +211,17 @@ class ClassifierTrainer:
                         data_loaded = pickle.load(f)
                     # Extract 'fingerprints' and 'config'
                     fingerprints_dict = data_loaded.get('fingerprints')
-                    config = data_loaded.get('config')
+                    dataset_config = data_loaded.get('config')
                     
                     if fingerprints_dict is None:
                         raise KeyError("The pickle file does not contain 'fingerprints'.")
-                    if config is None:
+                    if dataset_config is None:
                         raise KeyError("The pickle file does not contain 'config'.")
 
                     # Print the configuration
                     self.logger.info("Loaded configuration from pickle file:")
-                    print(config)
+                    self.dataset_config = dataset_config
+                    print(dataset_config)
                     
                 else:
                     # Case 2: Load features and labels from directory
@@ -370,7 +372,7 @@ class ClassifierTrainer:
             self.logger.info(f"Number of classes: {self.config.num_devices}")
             self.logger.info(f"Known devices: {len(known_devices)}, Unknown devices: {len(unknown_devices)}\n")
             
-            return X_train, X_test, y_train, y_test, label_encoding, config
+            return X_train, X_test, y_train, y_test, label_encoding, dataset_config
         
         except Exception as e:
             self.logger.error(f"Error during preprocessing: {e}")
@@ -879,9 +881,38 @@ class ClassifierTrainer:
                 filepath = os.path.join(save_directory, filename)
                 
                 plt.savefig(filepath, dpi=300, bbox_inches='tight')
-                print(f"Plot saved to: {filepath}")
+                self.logger.info(f"Plot saved to: {filepath}")
         
         plt.show()
+        
+    def save_trained_classifiers(self, trained_classifiers: dict = None, classification_config: EvaluationConfig = None, dataset_config: FingerprintConfig = None, save_directory: str = None, format: str = 'pickle') -> None:
+        """ Save the trained classifiers. """
+        if trained_classifiers is None:
+            trained_classifiers = self.trained_classifiers
+        if classification_config is None:
+            classification_config = self.config
+        if dataset_config is None:
+            dataset_config = self.dataset_config
+        if save_directory is None or save_directory == "":
+            raise ValueError("No save_directory given")
+        
+        os.makedirs(save_directory, exist_ok=True)
+        
+        current_date = datetime.now().strftime('%Y-%m-%d__%H-%M')
+        
+        data_to_save = {
+            'classifiers': trained_classifiers,
+            'classification_config': classification_config,
+            'dataset_config': dataset_config
+        }
+        
+        if format == 'pickle':
+            file_path = os.path.join(save_directory, f'trained_classifiers_{current_date}.pkl')
+            with open(file_path, 'wb') as f:
+                pickle.dump(data_to_save, f)
+            self.logger.info(f"Trained classifiers saved to {file_path} in pickle format.")
+        else:
+            self.logger.error(f"Unsupported format '{format}'. Supported formats are 'pickle'.")
 
 
 # local main
@@ -908,16 +939,15 @@ if __name__ == "__main__":
 
     # Train classifiers
     trained_classifiers = trainer.train_classifiers(X_train, y_train, method=TrainingMethod.CLASSIC)
-
+    trainer.save_trained_classifiers(trained_classifiers, classification_config, dataset_config, "../Results/ClassifierTrainer/Classifiers/")
+    print("Training completed successfully.\n")
+    
     # Evaluate classifiers
     evaluation_results = trainer.evaluate_classifiers(X_test, y_test, method=EvaluationMethod.CLASSIC)
-
-    # Print evaluation summary
-    trainer.print_evaluation_summary(evaluation_results, print_per_class = False, print_conf_matrix = False)
     
-    # Plot results
-    trainer.plot_evaluation_summary(evaluation_results, classification_config, dataset_config, "../Results/ClassifierTrainer/")
+    # Plot evaluation summary
+    trainer.plot_evaluation_summary(evaluation_results, classification_config, dataset_config, "../Results/ClassifierTrainer/Plots/")
+    print("Evaluation completed successfully.\n")
     
-    print("Evaluation complete.")
     
     
