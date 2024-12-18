@@ -1,4 +1,8 @@
-Results/ClassifierTrainer/Classifiers/*
+# Ignore the Classifiers directory
+Results/ClassifierTrainer/Classifiers/
+
+# Ignore all .pkl files
+*.pkl
 
 # Python-specific ignores
 *.pyc
