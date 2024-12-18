@@ -8,7 +8,7 @@ import pickle
 import json
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Dict, Tuple, Set, Any
+from typing import Dict, Tuple, Set, Any, List
 from math import inf
 import warnings
 from sklearn.exceptions import ConvergenceWarning
@@ -30,6 +30,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from matplotlib.colors import ListedColormap
+import textwrap
 
 
 from FingerprintExtractor import FingerprintExtractor, FingerprintConfig, FingerprintSetting, FingerprintSensor, FingerprintDataStream, FingerprintFeature
@@ -56,7 +57,7 @@ class Classifiers(Enum):
     DECISION_TREE = DecisionTreeClassifier
     
     # Ensemble Methods
-    BAGGED_DECISION_TREES = BaggingClassifier # (estimator=DecisionTreeClassifier())
+    BAGGED_DECISION_TREES = (BaggingClassifier, "dt")  # (estimator=DecisionTreeClassifier())
     RANDOM_FOREST = RandomForestClassifier
     EXTRA_TREES = ExtraTreesClassifier
     
@@ -65,7 +66,7 @@ class Classifiers(Enum):
     
     # Neural Networks
     MULTILAYER_PERCEPTRON = MLPClassifier # (hidden_layer_sizes=(100,100))
-    WIDE_NEURAL_NETWORK = MLPClassifier # (hidden_layer_sizes=(100))
+    WIDE_NEURAL_NETWORK = (MLPClassifier, "wide_nn") # (hidden_layer_sizes=(100))
 
 class TrainingMethod(Enum):
     """Supported training methods for classifiers."""
@@ -89,8 +90,21 @@ class EvaluationConfig:
     cv_folds: int = 5
     random_state: int = 42
     
-    classifiers: set = field(default_factory=lambda: {c for c in Classifiers})
-    
+    classifiers: List[Classifiers] = field(default_factory=lambda: [
+        Classifiers.STOCHASTIC_GRADIENT_DESCENT,
+        Classifiers.LINEAR_DISCRIMINANT_ANALYSIS,
+        Classifiers.SUPPORT_VECTOR_MACHINE,
+        Classifiers.GAUSSIAN_NAIVE_BAYES,
+        Classifiers.K_NEAREST_NEIGHBORS,
+        Classifiers.BAGGED_KNN,
+        Classifiers.DECISION_TREE,
+        Classifiers.BAGGED_DECISION_TREES,
+        Classifiers.RANDOM_FOREST,
+        Classifiers.EXTRA_TREES,
+        Classifiers.MULTILAYER_PERCEPTRON,
+        Classifiers.WIDE_NEURAL_NETWORK
+    ])
+
     def __post_init__(self):
         """Validate configuration parameters."""
         if not 0 < self.num_devices <= 100:
@@ -105,7 +119,9 @@ class EvaluationConfig:
         if self.random_state < 0:
             raise ValueError("random_state must be a non-negative integer")
         
-        self._validate_items(self.classifiers, "classifiers", Classifiers)
+        if not all(isinstance(item, Classifiers) for item in self.classifiers):
+            invalid_items = [item for item in self.classifiers if not isinstance(item, Classifiers)]
+            raise ValueError(f"Invalid values in 'classifiers': {invalid_items}.")
         
     def _validate_data(self, data: Any):
         """Validate the input data in the configuration."""
@@ -143,12 +159,6 @@ class EvaluationConfig:
         else:
             raise TypeError(f"'data' must be a dictionary or a valid file path to a '.pkl' or '.json' file, got {type(self.data).__name__}")
      
-    def _validate_items(self, items: set, field_name: str, enum_type: type):
-        """Validate that all elements in a set are valid members or values of an Enum."""
-        if not all(isinstance(item, enum_type) for item in items):
-            invalid_items = [item for item in items if not isinstance(item, enum_type)]
-            raise ValueError(f"Invalid values in '{field_name}': {invalid_items}.")
-        
 
 class ClassifierTrainer:
     """ Main class for training and evaluating classifiers."""
@@ -504,7 +514,7 @@ class ClassifierTrainer:
                         random_state=self.config.random_state
                     )
                 elif classifier_name == 'bagged_decision_trees':
-                    classifier = classifier_class(
+                    classifier = classifier_class[0](
                         estimator=DecisionTreeClassifier(),
                         random_state=self.config.random_state
                     )
@@ -527,7 +537,7 @@ class ClassifierTrainer:
                         random_state=self.config.random_state
                     )
                 elif classifier_name == 'wide_neural_network':
-                    classifier = classifier_class(
+                    classifier = classifier_class[0](
                         hidden_layer_sizes=(100,),
                         random_state=self.config.random_state
                     )   
@@ -652,7 +662,7 @@ class ClassifierTrainer:
         Returns:
             dict: A dictionary of evaluation results for the classifiers.
         """
-        self.logger.info(f"\nEvaluating classifiers using '{method.name.lower()}' method...")
+        self.logger.info(f"Evaluating classifiers using '{method.name.lower()}' method...")
         
         # Use the specified classifiers or default to trained classifiers
         classifiers_to_evaluate = classifiers or self.trained_classifiers
@@ -782,7 +792,7 @@ class ClassifierTrainer:
             
             print("-" * 50)
 
-    def plot_evaluation_summary(self, results: dict = None, eval_config : EvaluationConfig = None, dataset_config: FingerprintConfig = None, save_directory: str = None) -> None:
+    def plot_evaluation_summary(self, results: dict = None, eval_config : EvaluationConfig = None, dataset_config: FingerprintConfig = None, save_directory: str = None, save: bool = True) -> None:
         """ Plot evaluation results. """
         results_to_print = results or self.evaluation_results
         evaluation_config = eval_config  or self.config
@@ -793,6 +803,9 @@ class ClassifierTrainer:
         # Define colors of heatmap
         custom_colors = ["#F7FFE8", "#FFC300", "#FF5733", "#C70039", "#900C3F", "#581845"]
         custom_cmap = ListedColormap(custom_colors)
+        
+        # Save current date for save directory        
+        current_date = datetime.now().strftime('%Y-%m-%d__%H-%M')
 
         # Create a separate plot for each classifier
         for classifier_name, performance_metrics in results_to_print.items():
@@ -806,22 +819,26 @@ class ClassifierTrainer:
             config_ax = fig.add_subplot(gs[0, :])
             
             eval_config_text = (
-                f"Evaluation Configuration\n"
+                f"Evaluation Configuration:\n"
                 f"Number of Devices: {evaluation_config .num_devices} | "
                 f"Training Set Ratio: {evaluation_config .training_set_ratio} | "
                 f"Known-Unknown Ratio: {evaluation_config .known_unknown_ratio} | "
                 f"Cross-Validation Folds: {evaluation_config .cv_folds} | "
-                f"Random State: {evaluation_config .random_state}"
+                f"Random State: {evaluation_config .random_state}\n"
             )
             if dataset_config:
                 dataset_config_text = (
-                    f"\nDataset Configuration:\n"
+                    f"Dataset Configuration:\n"
                     f"Fingerprint Length: {dataset_config.fingerprint_length} | "
-                    f"Sampling Rate: {dataset_config.sampling_rate}\n"
-                    f"Enabled Settings: {', '.join(map(str, dataset_config.enabled_settings))}\n"
-                    f"Enabled Sensors: {', '.join(map(str, dataset_config.enabled_sensors))}\n"
-                    f"Enabled Streams: {', '.join(map(str, dataset_config.enabled_streams))}\n"
-                    f"Enabled Features: {', '.join(map(str, dataset_config.enabled_features))}"
+                    f"Sampling Rate: {dataset_config.sampling_rate} | "
+                    f"Enabled Settings: {', '.join(map(str, dataset_config.enabled_settings))} | "
+                    f"Enabled Sensors: {', '.join(map(str, dataset_config.enabled_sensors))} | "
+                    f"Enabled Streams: {', '.join(map(str, dataset_config.enabled_streams))} | "
+                    f"Enabled Features: {', '.join(map(str, dataset_config.enabled_features))}\n"
+                )
+                dataset_config_text = "\n".join(
+                    line for part in dataset_config_text.splitlines()
+                    for line in textwrap.wrap(part, width=150) or ['']
                 )
             else:
                 dataset_config_text = "\nNo Dataset Configuration Available"
@@ -871,14 +888,14 @@ class ClassifierTrainer:
             
         
             # Save the plot
-            if save_directory:
-                # Ensure the directory exists
-                os.makedirs(save_directory, exist_ok=True)
+            if save_directory and save:
+                # Create directory
+                dated_save_directory = os.path.join(save_directory, current_date)
+                os.makedirs(dated_save_directory, exist_ok=True)
                 
                 # Generate a unique filename
-                current_date = datetime.now().strftime('%Y-%m-%d__%H-%M')
                 filename = f"classifier_evaluation_{classifier_name}_{current_date}.png"
-                filepath = os.path.join(save_directory, filename)
+                filepath = os.path.join(dated_save_directory, filename)
                 
                 plt.savefig(filepath, dpi=300, bbox_inches='tight')
                 self.logger.info(f"Plot saved to: {filepath}")
@@ -919,14 +936,14 @@ class ClassifierTrainer:
 if __name__ == "__main__":
     # Configure classifier training and evaluation
     classification_config = EvaluationConfig(        
-        num_devices=100,
+        num_devices=5,
         training_set_ratio=0.8,
         known_unknown_ratio=1.0,
         
         cv_folds=2,
         random_state=42,
         
-        classifiers=set(Classifiers)
+        # classifiers=[Classifiers.K_NEAREST_NEIGHBORS ,Classifiers.BAGGED_DECISION_TREES, Classifiers.WIDE_NEURAL_NETWORK]
     )
     
     # Initialize the trainer
@@ -934,7 +951,7 @@ if __name__ == "__main__":
 
     # Load and preprocess the data
     X_train, X_test, y_train, y_test, label_encoding, dataset_config = trainer.load_and_preprocess_data(
-        data="../Data/extracted fingerprints/extracted_fingerprints_2024-12-17__16-36.pkl"
+        data="../Data/extracted fingerprints/extracted_fingerprints_2024-12-18__13-57.pkl"
     )
 
     # Train classifiers
@@ -946,7 +963,7 @@ if __name__ == "__main__":
     evaluation_results = trainer.evaluate_classifiers(X_test, y_test, method=EvaluationMethod.CLASSIC)
     
     # Plot evaluation summary
-    trainer.plot_evaluation_summary(evaluation_results, classification_config, dataset_config, "../Results/ClassifierTrainer/Plots/")
+    trainer.plot_evaluation_summary(evaluation_results, classification_config, dataset_config, "../Results/ClassifierTrainer/Plots/", save=True)
     print("Evaluation completed successfully.\n")
     
     

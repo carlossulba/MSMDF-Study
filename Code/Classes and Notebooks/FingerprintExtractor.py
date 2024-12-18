@@ -28,7 +28,7 @@ class FingerprintSensor(Enum):
     """Supported data stream types"""
     ACCELEROMETER = "accelerometer"
     GRAVITY = "gravity"
-    # TOTAL_ACCELERATION = "total_acceleration"
+    # TOTAL_ACCELERATION = "total_acceleration" # had to take out because some devices didnt report it (i prefered to conserve dimensionality)
     GYROSCOPE = "gyroscope"
 
 class FingerprintDataStream(Enum):
@@ -64,8 +64,8 @@ class FingerprintFeature(Enum):
     IRREGULARITY_K = "irregularity_k", "frequency"
     LOW_ENERGY_RATE = "low_energy_rate", "frequency"
     SMOOTHNESS = "smoothness", "frequency"
-    ATTACK_SLOPE = "attack_slope", "frequency"  # not implemented yet
-    ATTACK_TIME = "attack_time", "frequency"    # not implemented yet
+    # ATTACK_SLOPE = "attack_slope", "frequency"  # not implemented yet
+    # ATTACK_TIME = "attack_time", "frequency"    # not implemented yet
     SPECTRAL_BRIGHTNESS = "spectral_brightness", "frequency"
     SPECTRAL_CENTROID = "spectral_centroid", "frequency"
     SPECTRAL_CREST = "spectral_crest", "frequency"
@@ -103,6 +103,8 @@ class FingerprintConfig:
     enabled_sensors: set = field(default_factory=lambda: set(FingerprintSensor))
     enabled_streams: set = field(default_factory=lambda: set(FingerprintDataStream))
     enabled_features: set = field(default_factory=lambda: set(FingerprintFeature))
+    
+    min_recordings: int = 3 # min number of data collection sessions
     
     # Adjustable parameters for feature extraction
     spectral_brightness_threshold: float = 1500  # in Hz (as in Das et al. (2015))
@@ -703,9 +705,9 @@ class FingerprintExtractor:
                 if len(frames) > 0 else 0
             )
             
-            spectral_attack_time = 1 # Not implemented yet
+            # spectral_attack_time = 1 # Not implemented yet
 
-            spectral_attack_slope = 1 # Not implemented yet
+            # spectral_attack_slope = 1 # Not implemented yet
             
             spectral_roughness = self._spectral_roughness(fft_magnitude, fft_freqs) 
             
@@ -753,8 +755,8 @@ class FingerprintExtractor:
                 'spectral_roll_off': spectral_roll_off,
                 'spectral_irregularity': spectral_irregularity,
                 'spectral_flux': spectral_flux,
-                'spectral_attack_time': spectral_attack_time,
-                'spectral_attack_slope': spectral_attack_slope,
+                # 'spectral_attack_time': spectral_attack_time,
+                # 'spectral_attack_slope': spectral_attack_slope,
                 'spectral_roughness': spectral_roughness,
                 'irregularity_j': irregularity_j,
                 'irregularity_k': irregularity_k,
@@ -804,15 +806,10 @@ class FingerprintExtractor:
         spectral_roughness_value = np.mean(dissonance_values)
         return spectral_roughness_value
 
-    def _filter_devices_with_few_recordings(self, extracted_fingerprints: Dict[str, List[Tuple[List[np.ndarray], Dict[int, Dict[str, Any]]]]], min_recordings: int = 6) -> Dict[str, List[Tuple[List[np.ndarray], Dict[int, Dict[str, Any]]]]]:
-        """
-        Filter out devices with fewer than the specified number of fingerprints.
-        
-        Args:
-            extracted_fingerprints: Dictionary of extracted fingerprints
-            min_recordings: Minimum number of recordings required to keep a device
-        """
+    def _filter_devices_with_few_recordings(self, extracted_fingerprints: Dict[str, List[Tuple[List[np.ndarray], Dict[int, Dict[str, Any]]]]]) -> Dict[str, List[Tuple[List[np.ndarray], Dict[int, Dict[str, Any]]]]]:
+        """ Filter out devices with fewer than the specified number of fingerprints. """
         filtered_fingerprints = {}
+        min_recordings = self.config.min_recordings
         
         for setting, devices in extracted_fingerprints.items():
             filtered_devices = {}
@@ -945,6 +942,11 @@ class FingerprintExtractor:
         
         return num_total_devices, num_total_fingerprints
 
+    def plot_fingerprints(self, extracted_fingerprints: Dict[str, List[Any]] = None) -> None:
+        """ Plot extracted fingerprints. """
+        if extracted_fingerprints is None:
+            return
+
     def save_extracted_fingerprints(self, 
                                     extracted_fingerprints: Dict[str, Dict[str, List[Tuple[List[np.ndarray], Dict[int, Dict[str, Any]]]]]], 
                                     output_dir: str, 
@@ -982,13 +984,15 @@ if __name__ == "__main__":
     fingerprint_config = FingerprintConfig(
         data_location="../Data/raw data/separated by setting",
         
-        fingerprint_length=8.0,
+        fingerprint_length=3.0,
         sampling_rate=100,
         
         enabled_settings=set(FingerprintSetting),
-        enabled_sensors=set([FingerprintSensor.ACCELEROMETER]),
-        enabled_streams=set([FingerprintDataStream.X]),
-        enabled_features=set([FingerprintFeature.MAXIMUM])
+        enabled_sensors=set(FingerprintSensor),
+        enabled_streams=set(FingerprintDataStream),
+        enabled_features=set(FingerprintFeature),
+        
+        min_recordings=5
     )
     
     # Initialize extractor
@@ -996,11 +1000,14 @@ if __name__ == "__main__":
     
     # Extract fingerprints
     fingerprints = extractor.extract_fingerprints()
-    fingerprints = extractor._filter_devices_with_few_recordings(fingerprints, 5)
+    fingerprints = extractor._filter_devices_with_few_recordings(fingerprints)
 
     # Print extraction summary
     extractor.print_extraction_summary(fingerprints)
     print("Fingerprint extraction complete.")
+    
+    # Plot fingerprints
+    # extractor.plot_fingerprints(fingerprints)
     
     # Save extracted fingerprints
     extractor.save_extracted_fingerprints(fingerprints, output_dir='../Data/extracted fingerprints', format='pickle')
